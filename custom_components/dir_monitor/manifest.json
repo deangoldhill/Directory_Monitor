@@ -6,5 +6,6 @@
   "issue_tracker": "https://github.com/YOUR_GITHUB_USERNAME/YOUR_REPOSITORY_NAME/issues",
   "dependencies": [],
   "codeowners": ["@YOUR_GITHUB_USERNAME"],
-  "iot_class": "local_polling"
+  "iot_class": "local_polling",
+  "config_flow": true
 }
