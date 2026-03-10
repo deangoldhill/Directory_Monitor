@@ -1,0 +1,6 @@
+{
+  "name": "Directory Monitor",
+  "render_readme": true,
+  "iot_class": "Local Polling",
+  "domain": "dir_monitor"
+}
