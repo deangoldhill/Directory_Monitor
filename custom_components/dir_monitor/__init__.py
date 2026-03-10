@@ -27,7 +27,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             async with session.get(url, headers={"X-API-Key": api_key}, timeout=10) as response:
                 response.raise_for_status()
                 data = await response.json()
-                return {item["directory"]: item for item in data}
+                
+                # Transform the directories list into a dictionary for easier access
+                dirs_dict = {item["directory"]: item for item in data.get("directories", [])}
+                
+                return {
+                    "system": data.get("system", {}),
+                    "directories": dirs_dict
+                }
         except Exception as err:
             raise UpdateFailed(f"Error communicating with {host}: {err}")
 
