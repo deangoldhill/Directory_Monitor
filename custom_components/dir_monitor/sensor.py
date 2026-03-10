@@ -2,13 +2,20 @@ import logging
 from homeassistant.components.sensor import SensorEntity, SensorDeviceClass, SensorStateClass
 from homeassistant.const import PERCENTAGE, UnitOfInformation
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.core import HomeAssistant
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .const import DOMAIN, CONF_HOST
 
 _LOGGER = logging.getLogger(__name__)
 
-async def async_setup_entry(hass, entry, async_add_entities):
-    """Set up the sensor platform."""
+async def async_setup_entry(
+    hass: HomeAssistant, 
+    entry: ConfigEntry, 
+    async_add_entities: AddConfigEntryEntitiesCallback
+) -> None:
+    """Set up the sensor platform from a Config Flow entry."""
     coordinator = hass.data[DOMAIN][entry.entry_id]
     host = entry.data[CONF_HOST]
     data = coordinator.data
@@ -50,6 +57,7 @@ class HostSystemSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def device_info(self):
+        """Link this entity to the server Device."""
         return {
             "identifiers": {(DOMAIN, self._host)},
             "name": f"Linux Server ({self._host})",
@@ -79,6 +87,7 @@ class PartitionSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def device_info(self):
+        """Link this entity to the server Device."""
         return {"identifiers": {(DOMAIN, self._host)}}
 
     @property
@@ -102,26 +111,32 @@ class DirMonitorSensor(CoordinatorEntity, SensorEntity):
         self._attr_unique_id = f"dir_monitor_{host}_{directory}".replace("/", "_")
         self._attr_icon = "mdi:folder-information"
         self._attr_has_entity_name = True
+        
+        # State class + unit of measurement ensures HA graphs this as a continuous line
         self._attr_state_class = SensorStateClass.MEASUREMENT
+        self._attr_native_unit_of_measurement = "files" 
 
     @property
     def device_info(self):
+        """Link this entity to the server Device."""
         return {"identifiers": {(DOMAIN, self._host)}}
 
     @property
     def native_value(self):
+        """The state of the sensor is the number of files."""
         if self._directory in self.coordinator.data.get("directories", {}):
             return self.coordinator.data["directories"][self._directory]["num_files"]
         return None
 
     @property
     def extra_state_attributes(self):
+        """Attach size in GB and timestamps as attributes."""
         if self._directory in self.coordinator.data.get("directories", {}):
             data = self.coordinator.data["directories"][self._directory]
             return {
                 "size_gb": float(data["size_gb"]),
                 "created_date": data["created_date"],
                 "modified_date": data["modified_date"],
-                "full_path": self._directory # Keeping the full path as an attribute for reference
+                "full_path": self._directory 
             }
         return {}
