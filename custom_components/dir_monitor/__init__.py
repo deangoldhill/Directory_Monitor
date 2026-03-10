@@ -1,62 +1,135 @@
 import logging
-from datetime import timedelta
+from homeassistant.components.sensor import SensorEntity, SensorDeviceClass, SensorStateClass
+from homeassistant.const import PERCENTAGE, UnitOfInformation
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
-
-from .const import DOMAIN, CONF_HOST, CONF_API_KEY, CONF_UPDATE_INTERVAL
+from .const import DOMAIN, CONF_HOST
 
 _LOGGER = logging.getLogger(__name__)
-PLATFORMS = ["sensor"]
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up Directory Monitor from a config entry."""
-    hass.data.setdefault(DOMAIN, {})
-
+async def async_setup_entry(hass, entry, async_add_entities):
+    """Set up the sensor platform from a Config Flow entry."""
+    coordinator = hass.data[DOMAIN][entry.entry_id]
     host = entry.data[CONF_HOST]
-    api_key = entry.data[CONF_API_KEY]
-    update_interval = entry.data.get(CONF_UPDATE_INTERVAL, 300)
-    
-    url = f"http://{host}:7112/api/stats"
-    session = async_get_clientsession(hass)
+    data = coordinator.data
 
-    async def async_fetch_data():
-        try:
-            async with session.get(url, headers={"X-API-Key": api_key}, timeout=10) as response:
-                response.raise_for_status()
-                data = await response.json()
-                
-                # Transform the directories list into a dictionary for easier access
-                dirs_dict = {item["directory"]: item for item in data.get("directories", [])}
-                
-                return {
-                    "system": data.get("system", {}),
-                    "directories": dirs_dict
-                }
-        except Exception as err:
-            raise UpdateFailed(f"Error communicating with {host}: {err}")
+    entities = []
 
-    coordinator = DataUpdateCoordinator(
-        hass,
-        _LOGGER,
-        name=f"dir_monitor_{host}",
-        update_method=async_fetch_data,
-        update_interval=timedelta(seconds=update_interval),
-    )
+    # 1. System Sensors
+    entities.append(HostSystemSensor(coordinator, host, "hostname", "Hostname", None, None, "mdi:nas"))
+    entities.append(HostSystemSensor(coordinator, host, "cpu_usage", "CPU Usage", PERCENTAGE, None, "mdi:cpu-64-bit"))
+    entities.append(HostSystemSensor(coordinator, host, "memory_total_gb", "Total Memory", UnitOfInformation.GIGABYTES, SensorDeviceClass.DATA_SIZE, "mdi:memory"))
+    entities.append(HostSystemSensor(coordinator, host, "memory_free_gb", "Free Memory", UnitOfInformation.GIGABYTES, SensorDeviceClass.DATA_SIZE, "mdi:memory"))
 
-    await coordinator.async_config_entry_first_refresh()
+    # 2. Partition Sensors
+    for part in data.get("system", {}).get("partitions", []):
+        entities.append(PartitionSensor(coordinator, host, part["device"], part["mountpoint"]))
 
-    # Store the coordinator so the sensor platform can access it
-    hass.data[DOMAIN][entry.entry_id] = coordinator
+    # 3. Directory Sensors
+    for directory in data.get("directories", {}).keys():
+        entities.append(DirMonitorSensor(coordinator, host, directory))
 
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    return True
+    async_add_entities(entities)
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload a config entry."""
-    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    if unload_ok:
-        hass.data[DOMAIN].pop(entry.entry_id)
-    return unload_ok
+class HostSystemSensor(CoordinatorEntity, SensorEntity):
+    def __init__(self, coordinator, host, key, name, unit, device_class, icon):
+        super().__init__(coordinator)
+        self._host = host
+        self._key = key
+        
+        self._attr_name = name
+        self._attr_unique_id = f"dir_monitor_{host}_{key}"
+        self._attr_native_unit_of_measurement = unit
+        self._attr_device_class = device_class
+        self._attr_icon = icon
+        self._attr_has_entity_name = True
+        
+        # Strings (like hostname) don't have a state class
+        if key != "hostname":
+            self._attr_state_class = SensorStateClass.MEASUREMENT
+
+    @property
+    def device_info(self):
+        """Link this entity to the server Device."""
+        return {
+            "identifiers": {(DOMAIN, self._host)},
+            "name": f"Linux Server ({self._host})",
+            "manufacturer": "Directory Monitor",
+            "model": "Debian API Node",
+        }
+
+    @property
+    def native_value(self):
+        return self.coordinator.data.get("system", {}).get(self._key)
+
+class PartitionSensor(CoordinatorEntity, SensorEntity):
+    def __init__(self, coordinator, host, device, mountpoint):
+        super().__init__(coordinator)
+        self._host = host
+        self._device = device
+        
+        # Extract the partition name (e.g., sda1 from /dev/sda1)
+        dev_name = device.split('/')[-1]
+        
+        self._attr_name = f"Partition {dev_name} Free"
+        self._attr_unique_id = f"dir_monitor_{host}_part_{dev_name}"
+        self._attr_native_unit_of_measurement = PERCENTAGE
+        self._attr_icon = "mdi:harddisk"
+        self._attr_has_entity_name = True
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+
+    @property
+    def device_info(self):
+        """Link this entity to the server Device."""
+        return {"identifiers": {(DOMAIN, self._host)}}
+
+    @property
+    def native_value(self):
+        parts = self.coordinator.data.get("system", {}).get("partitions", [])
+        for p in parts:
+            if p["device"] == self._device:
+                return p["free_percent"]
+        return None
+
+class DirMonitorSensor(CoordinatorEntity, SensorEntity):
+    def __init__(self, coordinator, host, directory):
+        super().__init__(coordinator)
+        self._host = host
+        self._directory = directory
+        
+        # Only use the top-level name (e.g. /var/log/apt -> apt)
+        base_name = directory.rstrip('/').split('/')[-1]
+        
+        self._attr_name = f"Dir: {base_name}" if base_name else "Dir: Root"
+        self._attr_unique_id = f"dir_monitor_{host}_{directory}".replace("/", "_")
+        self._attr_icon = "mdi:folder-information"
+        self._attr_has_entity_name = True
+        
+        # State class + unit of measurement ensures HA graphs this as a continuous line [web:11]
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+        self._attr_native_unit_of_measurement = "files" 
+
+    @property
+    def device_info(self):
+        """Link this entity to the server Device."""
+        return {"identifiers": {(DOMAIN, self._host)}}
+
+    @property
+    def native_value(self):
+        """The state of the sensor is the number of files."""
+        if self._directory in self.coordinator.data.get("directories", {}):
+            return self.coordinator.data["directories"][self._directory]["num_files"]
+        return None
+
+    @property
+    def extra_state_attributes(self):
+        """Attach size in GB and timestamps as attributes."""
+        if self._directory in self.coordinator.data.get("directories", {}):
+            data = self.coordinator.data["directories"][self._directory]
+            return {
+                "size_gb": float(data["size_gb"]),
+                "created_date": data["created_date"],
+                "modified_date": data["modified_date"],
+                "full_path": self._directory 
+            }
+        return {}
